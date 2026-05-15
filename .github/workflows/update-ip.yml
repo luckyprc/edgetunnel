@@ -1,0 +1,68 @@
+name: Auto Update CF Best IP
+
+on:
+  schedule:
+    - cron: '0 2 * * *'   # 每天北京时间 10:00
+  workflow_dispatch:
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ========== 步骤1：自己测速（可选，GitHub runner在国外测的不准，可以保留作为补充） ==========
+      - name: Download CloudflareSpeedTest
+        run: |
+          wget -q -N https://github.com/XIU2/CloudflareSpeedTest/releases/latest/download/cfst_linux_amd64.tar.gz
+          tar -zxf cfst_linux_amd64.tar.gz
+          chmod +x cfst
+
+      - name: Run Speed Test
+        run: |
+          ./cfst -n 200 -t 4 -dn 20 -dt 10 -tp 443 -o result.csv || true
+          if [ -f result.csv ] && [ "$(wc -l < result.csv)" -gt 1 ]; then
+            awk -F, 'NR>1 && NR<=21 {print $1":443#CF优选"}' result.csv > my_ips.txt
+          else
+            touch my_ips.txt
+          fi
+
+      # ========== 步骤2：拉取三个公共API并合并 ==========
+      - name: Merge Public APIs
+        run: |
+          # 拉取电信、联通、移动优选IP
+          curl -sL --retry 3 --max-time 15 https://cf.090227.xyz/ct > ct.txt || touch ct.txt
+          curl -sL --retry 3 --max-time 15 https://cf.090227.xyz/cu > cu.txt || touch cu.txt
+          curl -sL --retry 3 --max-time 15 https://cf.090227.xyz/cm > cm.txt || touch cm.txt
+          
+          # 合并所有来源：自己测速的 + 三网公共API，去重
+          cat my_ips.txt ct.txt cu.txt cm.txt | grep -v '^$' | sort -u > merged_ips.txt
+          
+          echo "=== 合并后共 $(wc -l < merged_ips.txt) 个IP ==="
+          head -20 merged_ips.txt
+
+      # ========== 步骤3：推送合并结果到仓库 ==========
+      - name: Commit and Push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # 如果从来没有过这个文件，创建一个空的避免报错
+          if [ ! -f merged_ips.txt ]; then
+            echo "# placeholder" > merged_ips.txt
+          fi
+          
+          git add merged_ips.txt
+          
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+          else
+            git commit -m "auto: merge best IPs $(date +%Y-%m-%d-%H:%M)"
+            git push
+            echo "Pushed merged IPs"
+          fi
+
+      - name: Cleanup
+        if: always()
+        run: rm -f result.csv cfst cfst_linux_amd64.tar.gz ct.txt cu.txt cm.txt my_ips.txt
