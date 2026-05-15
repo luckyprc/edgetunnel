@@ -1,0 +1,65 @@
+name: Auto Update CF Best IP
+
+on:
+  schedule:
+    - cron: '0 2 * * *'   # 每天 UTC 02:00，北京时间 10:00
+  workflow_dispatch:       # 支持手动触发
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # 需要完整历史来解决 push 冲突
+
+      - name: Download CloudflareSpeedTest
+        run: |
+          wget -q -N https://github.com/XIU2/CloudflareSpeedTest/releases/latest/download/cfst_linux_amd64.tar.gz
+          tar -zxf cfst_linux_amd64.tar.gz
+          chmod +x cfst
+
+      - name: Run Speed Test
+        run: |
+          ./cfst -n 200 -t 4 -dn 20 -dt 10 -tp 443 -o result.csv || true
+          if [ -f result.csv ] && [ "$(wc -l < result.csv)" -gt 1 ]; then
+            awk -F, 'NR>1 && NR<=21 {print $1":443#CF优选"}' result.csv > my_ips.txt
+          else
+            touch my_ips.txt
+          fi
+
+      - name: Merge with Public API
+        run: |
+          # 只保留这一个公共 API 源
+          curl -sL --retry 3 --max-time 15             https://stock.hostmonit.com/CloudFlareYes > api.txt || touch api.txt
+
+          # 合并：自己测速的 IP + 公共 API，去重
+          cat my_ips.txt api.txt | grep -v '^$' | sort -u > merged_ips.txt
+
+          # 验证结果
+          ip_count=$(grep -cE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' merged_ips.txt || echo 0)
+          echo "=== 合并后共 $(wc -l < merged_ips.txt) 行，其中约 ${ip_count} 个 IP 格式行 ==="
+          head -30 merged_ips.txt
+
+      - name: Commit and Push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # 先拉取远程最新代码，避免 upstream sync 导致 push 冲突
+          git pull --rebase origin main || true
+
+          git add merged_ips.txt
+
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+          else
+            git commit -m "auto: merge best IPs $(date +%Y-%m-%d-%H:%M)"
+            git push --force-with-lease origin main
+            echo "Pushed merged IPs"
+          fi
+
+      - name: Cleanup
+        if: always()
+        run: rm -f result.csv cfst cfst_linux_amd64.tar.gz api.txt my_ips.txt
