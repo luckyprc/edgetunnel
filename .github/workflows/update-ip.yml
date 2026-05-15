@@ -2,8 +2,8 @@ name: Auto Update CF Best IP
 
 on:
   schedule:
-    - cron: '0 2 * * *'
-  workflow_dispatch:
+    - cron: '0 2 * * *'   # 每天北京时间 10:00
+  workflow_dispatch:       # 支持手动触发
 
 jobs:
   update:
@@ -12,46 +12,31 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 0  # 解决 push 冲突需要完整历史
 
-      - name: Download CloudflareSpeedTest
+      - name: Merge Public APIs
         run: |
-          wget -q -N https://github.com/XIU2/CloudflareSpeedTest/releases/latest/download/cfst_linux_amd64.tar.gz
-          tar -zxf cfst_linux_amd64.tar.gz
-          chmod +x cfst
-
-      - name: Run Speed Test
-        run: |
-          ./cfst -n 200 -t 4 -dn 20 -dt 10 -tp 443 -o result.csv || true
-          if [ -f result.csv ] && [ "$(wc -l < result.csv)" -gt 1 ]; then
-            awk -F, 'NR>1 && NR<=21 {print $1":443#CF优选"}' result.csv > my_ips.txt
-          else
-            touch my_ips.txt
-          fi
-
-      - name: Merge with Public API
-        run: |
-          # 拉取外部 API（GitHub Raw 通常不会被 CF 拦截）
-          curl -sL --retry 3 --max-time 15 \
-            https://raw.githubusercontent.com/cmliu/WorkerVless2sub/main/addressesapi.txt > api_raw.txt || touch api_raw.txt
+          # 国内公共API（国内网友每天测的，比国外runner准）
+          curl -sL --retry 3 --max-time 15 https://cf.001315.xyz/ct > ct.txt || touch ct.txt
+          curl -sL --retry 3 --max-time 15 https://cf.001315.xyz/cu > cu.txt || touch cu.txt
+          curl -sL --retry 3 --max-time 15 https://cf.001315.xyz/cmcc > cm.txt || touch cm.txt
+          curl -sL --retry 3 --max-time 15 https://cf.001315.xyz/CloudFlareYes > cf.txt || touch cf.txt
           
-          # ========== 关键修复：严格过滤，只保留 IP:端口#备注 格式的行 ==========
-          # 过滤规则：必须以数字开头（IP格式），排除所有 HTML/JS/乱码
-          cat my_ips.txt api_raw.txt | \
+          # 严格过滤：只保留 IP 格式行，排除 HTML/JS/乱码
+          cat ct.txt cu.txt cm.txt cf.txt | \
             grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | \
             grep -v '^$' | \
             sort -u > merged_ips.txt
           
-          # 验证结果
-          total=$(wc -l < merged_ips.txt)
-          echo "=== 合并后共 ${total} 个有效 IP ==="
-          head -30 merged_ips.txt
+          echo "=== 合并后共 $(wc -l < merged_ips.txt) 个有效IP ==="
+          head -20 merged_ips.txt
 
       - name: Commit and Push
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           
+          # 先拉取远程最新，避免 upstream sync 导致冲突
           git pull --rebase origin main || true
           
           git add merged_ips.txt
@@ -59,11 +44,11 @@ jobs:
           if git diff --cached --quiet; then
             echo "No changes to commit."
           else
-            git commit -m "auto: merge best IPs $(date +%Y-%m-%d-%H:%M)"
+            git commit -m "auto: update CF IPs $(date +%Y-%m-%d-%H:%M)"
             git push --force-with-lease origin main
-            echo "Pushed merged IPs"
+            echo "Pushed updated IPs"
           fi
 
       - name: Cleanup
         if: always()
-        run: rm -f result.csv cfst cfst_linux_amd64.tar.gz api_raw.txt my_ips.txt
+        run: rm -f ct.txt cu.txt cm.txt cf.txt
