@@ -2,8 +2,8 @@ name: Auto Update CF Best IP
 
 on:
   schedule:
-    - cron: '0 2 * * *'   # 每天 UTC 02:00，北京时间 10:00
-  workflow_dispatch:       # 支持手动触发
+    - cron: '0 2 * * *'
+  workflow_dispatch:
 
 jobs:
   update:
@@ -12,7 +12,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # 需要完整历史来解决 push 冲突
+          fetch-depth: 0
 
       - name: Download CloudflareSpeedTest
         run: |
@@ -31,27 +31,31 @@ jobs:
 
       - name: Merge with Public API
         run: |
-          # 只保留这一个公共 API 源
-          curl -sL --retry 3 --max-time 15             https://stock.hostmonit.com/CloudFlareYes > api.txt || touch api.txt
-
-          # 合并：自己测速的 IP + 公共 API，去重
-          cat my_ips.txt api.txt | grep -v '^$' | sort -u > merged_ips.txt
-
+          # 拉取外部 API（GitHub Raw 通常不会被 CF 拦截）
+          curl -sL --retry 3 --max-time 15 \
+            https://raw.githubusercontent.com/cmliu/WorkerVless2sub/main/addressesapi.txt > api_raw.txt || touch api_raw.txt
+          
+          # ========== 关键修复：严格过滤，只保留 IP:端口#备注 格式的行 ==========
+          # 过滤规则：必须以数字开头（IP格式），排除所有 HTML/JS/乱码
+          cat my_ips.txt api_raw.txt | \
+            grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | \
+            grep -v '^$' | \
+            sort -u > merged_ips.txt
+          
           # 验证结果
-          ip_count=$(grep -cE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' merged_ips.txt || echo 0)
-          echo "=== 合并后共 $(wc -l < merged_ips.txt) 行，其中约 ${ip_count} 个 IP 格式行 ==="
+          total=$(wc -l < merged_ips.txt)
+          echo "=== 合并后共 ${total} 个有效 IP ==="
           head -30 merged_ips.txt
 
       - name: Commit and Push
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-
-          # 先拉取远程最新代码，避免 upstream sync 导致 push 冲突
+          
           git pull --rebase origin main || true
-
+          
           git add merged_ips.txt
-
+          
           if git diff --cached --quiet; then
             echo "No changes to commit."
           else
@@ -62,4 +66,4 @@ jobs:
 
       - name: Cleanup
         if: always()
-        run: rm -f result.csv cfst cfst_linux_amd64.tar.gz api.txt my_ips.txt
+        run: rm -f result.csv cfst cfst_linux_amd64.tar.gz api_raw.txt my_ips.txt
